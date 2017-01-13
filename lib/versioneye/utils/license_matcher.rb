@@ -5,7 +5,7 @@ require 'json'
 
 class LicenseMatcher
 
-  attr_reader :corpus, :licenses, :model, :url_index, :rules, :spdx_ids, :custom_ids
+  attr_reader :corpus, :licenses, :model, :url_index, :rules, :spdx_ids, :custom_ids, :spdx_rules
 
   DEFAULT_CORPUS_FILES_PATH = 'data/spdx_licenses/plain'
   CUSTOM_CORPUS_FILES_PATH  = 'data/custom_licenses' # Where to look up non SPDX licenses
@@ -40,6 +40,7 @@ class LicenseMatcher
     @url_index = read_license_url_index(licenses_json_doc)
     @model = TfIdfSimilarity::BM25Model.new(@corpus, :library => :narray)
     @rules = get_rules
+    @spdx_rules = init_spdx_rules
     true
   end
 
@@ -119,7 +120,7 @@ class LicenseMatcher
   # @returns:
   def match_rules(text, early_exit = true)
     matches = []
-    text_ = text.to_s.strip + " " #required to make difference between end of versionNumber and end of string
+    text_ = preprocess_text(text) + " " #required to make difference between end of versionNumber and end of string
     ignore_rules = get_ignore_rules()
 
     #if text is in ignore list, then return same text, but negative score as it's spam
@@ -134,6 +135,27 @@ class LicenseMatcher
     end
 
     matches
+  end
+
+  # finds matching SPDX rule that matches with the text
+  def match_spdx_rules(text, early_exit = true)
+    matches = []
+    text_ = preprocess_text(text) + " "
+
+    @spdx_rules.each do |spdx_id, rules|
+      matching_rule = matches_any_rule?(rules, text_)
+      unless matching_rule.nil?
+        matches << [spdx_id, 1.0, matching_rule]
+        break if early_exit
+      end
+    end
+
+    matches
+  end
+
+  def preprocess_text(the_text)
+    #TODO: stop words
+    the_text = text.to_s.strip.gsub(/[\,|\.|\?|\!]/, ' ').gsub(/\s+/, ' ')
   end
 
   def matches_any_rule?(rules, license_name)
@@ -237,6 +259,43 @@ class LicenseMatcher
     return nil
   end
 
+
+  # builds regex rules based on the LicenseJSON file
+  # rules are using urls, IDS, names and alternative names to build full string matching regexes
+  def init_spdx_rules
+    spdx_rules = {}
+
+    spdx_json = read_json_file(LICENSE_JSON_FILE)
+    unless spdx_json
+      raise "init_spdx_rules: failed to read spdx JSON file at #{LICENSE_JSON_FILE}."
+    end
+
+    spdx_json.each do |spdx_item|
+      spdx_rules[spdx_item[:id]] = build_spdx_item_rules(spdx_item)
+    end
+
+    spdx_rules
+  end
+
+  def build_spdx_item_rules(spdx_item)
+    rules = []
+    rules << Regexp.new("\\b#{spdx_item[:id]}\\b".gsub(/\s+/, '\\s'), Regexp::IGNORECASE)
+    rules << Regexp.new("\\b#{spdx_item[:name]}\\b".gsub(/\s+/, '\\s'), Regexp::IGNORECASE)
+    
+    spdx_item[:identifiers].to_a.each do |id|
+      rules << Regexp.new("\\b#{id[:identifier]}\\b".gsub(/\s+/, '\\s'), Regexp::IGNORECASE)
+    end
+
+    spdx_item[:links].to_a.each do |link|
+      rules << Regexp.new("\\b#{link[:url]}\\b".gsub(/\s+/, '\\s'), Regexp::IGNORECASE)
+    end
+
+    spdx_item[:other_names].to_a.each do |alt|
+      rules << Regexp.new("\\b#{alt[:name]}\\b".gsub(/\s+/, '\\s'), Regexp::IGNORECASE)
+    end
+
+    rules
+  end
 
   def get_ignore_rules
     [

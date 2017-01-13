@@ -123,4 +123,9 @@ describe LicenseMatcher do
 		expect( lic_matcher.match_url(gpl3).first ).to eq('GPL-3.0')
 	end
 
+  describe "match_spdx_rules" do
+    it "matches every thing in licenses.json" do
+
+    end
+  end
 end
